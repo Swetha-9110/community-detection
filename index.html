@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Community Detection</title>
+<style>
+:root{--bg:#f7f7f5;--panel:#ffffff;--ink:#1d1d1b;--muted:#6b6b66;--line:#e2e2dc;--accent:#2f5bea;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#161614;--panel:#21211f;--ink:#ecebe6;--muted:#9a9a93;--line:#34342f;--accent:#7b9bff;color-scheme:dark}}
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+header{padding:16px 18px 6px;max-width:1100px;margin:0 auto}
+h1{font-size:20px;margin:0}
+.sub{color:var(--muted);font-size:13px;margin-top:2px}
+main{display:grid;gap:14px;padding:12px 18px 28px;max-width:1100px;margin:0 auto}
+@media (min-width:860px){main{grid-template-columns:320px 1fr;align-items:start}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;min-width:0}
+label{display:block;font-size:13px;color:var(--muted);margin:12px 0 6px}
+textarea{width:100%;height:150px;font:12px ui-monospace,Menlo,monospace;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;resize:vertical}
+button,.filebtn{font:inherit;font-size:14px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;padding:8px 12px;cursor:pointer;display:inline-block}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.filebtn input{display:none}
+.row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+.stat{padding:10px 12px}
+.stat b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+.stat span{font-size:12px;color:var(--muted)}
+canvas{width:100%;height:520px;display:block;border-radius:8px;background:var(--bg);touch-action:none}
+.legend{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:10px;font-size:13px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle}
+.msg{font-size:13px;color:var(--muted);margin-top:10px;min-height:18px}
+details{margin-top:12px}
+summary{cursor:pointer;font-size:14px;color:var(--accent)}
+#out{width:100%;height:160px;margin-top:8px;font:12px ui-monospace,Menlo,monospace;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px}
+@media (max-width:600px){.stats{grid-template-columns:repeat(2,1fr)} canvas{height:380px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Community Detection</h1>
+  <div class="sub">Louvain modularity optimization on an undirected graph, computed in your browser</div>
+</header>
+
+<main>
+  <section class="card">
+    <label for="input">Edge list: one "u v" pair per line. Lines starting with # are ignored.</label>
+    <textarea id="input" spellcheck="false"></textarea>
+    <div class="row">
+      <button id="sample">Load sample</button>
+      <label class="filebtn">Upload file<input id="file" type="file" accept=".txt,.csv,.tsv,.edges,.el"></label>
+      <button id="clear">Clear</button>
+    </div>
+
+    <label for="gamma">Resolution γ: <span id="gv">1.00</span></label>
+    <input id="gamma" type="range" min="0.2" max="3" step="0.05" value="1">
+    <div class="sub">Higher γ gives more, smaller communities. Lower γ gives fewer, larger ones.</div>
+
+    <div class="row"><button id="run" class="primary">Detect communities</button></div>
+    <div class="msg" id="msg"></div>
+  </section>
+
+  <section class="card">
+    <div class="stats">
+      <div class="stat card"><b id="sN">–</b><span>Nodes</span></div>
+      <div class="stat card"><b id="sE">–</b><span>Edges</span></div>
+      <div class="stat card"><b id="sC">–</b><span>Communities</span></div>
+      <div class="stat card"><b id="sQ">–</b><span>Modularity Q</span></div>
+    </div>
+    <canvas id="canvas"></canvas>
+    <div class="legend" id="legend"></div>
+    <details>
+      <summary>Show node assignments (CSV)</summary>
+      <textarea id="out" readonly></textarea>
+    </details>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const canvas = $('canvas'), ctx = canvas.getContext('2d');
+const LAYOUT_LIMIT = 1200;
+let G = null, result = null, view = null, hover = null;
+
+function setMsg(t){ $('msg').textContent = t; }
+function color(c){ return `hsl(${(c * 137.508) % 360} 65% 55%)`; }
+
+function parse(text){
+  const idx = new Map(), ids = [], seen = new Set(), edges = [];
+  const id = s => { if(!idx.has(s)){ idx.set(s, ids.length); ids.push(s); } return idx.get(s); };
+  for(const raw of text.split(/\r?\n/)){
+    const line = raw.trim();
+    if(!line || line[0] === '#' || line[0] === '%') continue;
+    const p = line.split(/[\s,;\t]+/);
+    if(p.length < 2) continue;
+    const u = id(p[0]), v = id(p[1]);
+    if(u === v) continue;
+    const key = u < v ? `${u},${v}` : `${v},${u}`;
+    if(seen.has(key)) continue;
+    seen.add(key); edges.push([u, v]);
+  }
+  return { n: ids.length, ids, edges };
+}
+
+function sampleGraph(){
+  const k = 4, size = 30, n = k * size, lines = [];
+  for(let i = 0; i < n; i++) for(let j = i + 1; j < n; j++){
+    const same = Math.floor(i / size) === Math.floor(j / size);
+    if(Math.random() < (same ? 0.25 : 0.01)) lines.push(`${i} ${j}`);
+  }
+  return lines.join('\n');
+}
+
+function modularity(n, edges, comm, gamma){
+  const m2 = 2 * edges.length;
+  if(!m2) return 0;
+  const deg = new Float64Array(n);
+  for(const [u, v] of edges){ deg[u]++; deg[v]++; }
+  const inW = new Map(), totW = new Map();
+  for(let i = 0; i < n; i++) totW.set(comm[i], (totW.get(comm[i]) || 0) + deg[i]);
+  for(const [u, v] of edges) if(comm[u] === comm[v]) inW.set(comm[u], (inW.get(comm[u]) || 0) + 2);
+  let Q = 0;
+  for(const [c, t] of totW) Q += (inW.get(c) || 0) / m2 - gamma * (t / m2) * (t / m2);
+  return Q;
+}
+
+function louvain(n, edges, gamma){
+  const M2 = 2 * edges.length;
+  if(!M2) return Array.from({length: n}, (_, i) => i);
+  let adj = Array.from({length: n}, () => new Map());
+  for(const [u, v] of edges){
+    adj[u].set(v, (adj[u].get(v) || 0) + 1);
+    adj[v].set(u, (adj[v].get(u) || 0) + 1);
+  }
+  let members = Array.from({length: n}, (_, i) => i);
+  while(true){
+    const m = adj.length;
+    const k = new Float64Array(m);
+    for(let i = 0; i < m; i++) for(const w of adj[i].values()) k[i] += w;
+    const comm = Array.from({length: m}, (_, i) => i);
+    const tot = Float64Array.from(k);
+    let moved = true, any = false, guard = 0;
+    while(moved && guard++ < 100){
+      moved = false;
+      for(let i = 0; i < m; i++){
+        const ci = comm[i];
+        const wTo = new Map();
+        for(const [j, w] of adj[i]){
+          if(j === i) continue;
+          const cj = comm[j];
+          wTo.set(cj, (wTo.get(cj) || 0) + w);
+        }
+        tot[ci] -= k[i];
+        let best = ci, bestG = (wTo.get(ci) || 0) - gamma * tot[ci] * k[i] / M2;
+        for(const [c, w] of wTo){
+          const g = w - gamma * tot[c] * k[i] / M2;
+          if(g > bestG + 1e-12){ bestG = g; best = c; }
+        }
+        tot[best] += k[i];
+        if(best !== ci){ comm[i] = best; moved = true; any = true; }
+      }
+    }
+    if(!any) break;
+    const renum = new Map();
+    for(let i = 0; i < m; i++) if(!renum.has(comm[i])) renum.set(comm[i], renum.size);
+    const nc = comm.map(c => renum.get(c));
+    members = members.map(s => nc[s]);
+    const C = renum.size;
+    if(C === m) break;
+    const nadj = Array.from({length: C}, () => new Map());
+    for(let i = 0; i < m; i++) for(const [j, w] of adj[i]){
+      const a = nc[i], b = nc[j];
+      nadj[a].set(b, (nadj[a].get(b) || 0) + w);
+    }
+    adj = nadj;
+  }
+  return members;
+}
+
+function computeLayout(n, edges){
+  const x = new Float64Array(n), y = new Float64Array(n);
+  for(let i = 0; i < n; i++){ x[i] = Math.random(); y[i] = Math.random(); }
+  const k = 1 / Math.sqrt(n);
+  const dx = new Float64Array(n), dy = new Float64Array(n);
+  let t = 0.1;
+  for(let it = 0; it < 200; it++){
+    dx.fill(0); dy.fill(0);
+    for(let i = 0; i < n; i++) for(let j = i + 1; j < n; j++){
+      const ex = x[i] - x[j], ey = y[i] - y[j];
+      const d2 = ex * ex + ey * ey + 1e-6;
+      const f = k * k / d2;
+      dx[i] += ex * f; dy[i] += ey * f;
+      dx[j] -= ex * f; dy[j] -= ey * f;
+    }
+    for(const [u, v] of edges){
+      const ex = x[u] - x[v], ey = y[u] - y[v];
+      const d = Math.sqrt(ex * ex + ey * ey) + 1e-6;
+      const f = d / k;
+      dx[u] -= ex * f; dy[u] -= ey * f;
+      dx[v] += ex * f; dy[v] += ey * f;
+    }
+    for(let i = 0; i < n; i++){
+      const d = Math.sqrt(dx[i] * dx[i] + dy[i] * dy[i]) + 1e-9;
+      const s = Math.min(d, t) / d;
+      x[i] += dx[i] * s; y[i] += dy[i] * s;
+    }
+    t *= 0.985;
+  }
+  return { x, y };
+}
+
+function draw(){
+  const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  canvas.width = r.width * dpr; canvas.height = r.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = r.width, H = r.height;
+  ctx.clearRect(0, 0, W, H);
+  const muted = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim();
+  const ink = getComputedStyle(document.documentElement).getPropertyValue('--ink').trim();
+  view = null;
+  ctx.font = '13px system-ui, sans-serif';
+  if(!G || !result){
+    ctx.fillStyle = muted; ctx.textAlign = 'center';
+    ctx.fillText('Load an edge list to see the graph', W / 2, H / 2);
+    return;
+  }
+  if(!G.pos){
+    ctx.fillStyle = muted; ctx.textAlign = 'center';
+    ctx.fillText(`${G.n.toLocaleString()} nodes: drawing is limited to ${LAYOUT_LIMIT.toLocaleString()}. Stats are shown above.`, W / 2, H / 2);
+    return;
+  }
+  const { x, y } = G.pos;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for(let i = 0; i < G.n; i++){
+    if(x[i] < x0) x0 = x[i]; if(x[i] > x1) x1 = x[i];
+    if(y[i] < y0) y0 = y[i]; if(y[i] > y1) y1 = y[i];
+  }
+  const pad = 20;
+  const s = Math.min((W - 2 * pad) / ((x1 - x0) || 1), (H - 2 * pad) / ((y1 - y0) || 1));
+  const ox = (W - (x1 - x0) * s) / 2, oy = (H - (y1 - y0) * s) / 2;
+  view = { s, ox, oy, x0, y0, x, y };
+  const P = i => [ox + (x[i] - x0) * s, oy + (y[i] - y0) * s];
+
+  ctx.strokeStyle = muted; ctx.lineWidth = 0.6; ctx.globalAlpha = 0.3;
+  ctx.beginPath();
+  for(const [u, v] of G.edges){
+    const a = P(u), b = P(v);
+    ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
+  }
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  for(let i = 0; i < G.n; i++){
+    const [px, py] = P(i);
+    ctx.fillStyle = color(result.comm[i]);
+    ctx.beginPath();
+    ctx.arc(px, py, hover === i ? 6 : 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if(hover != null){
+    const [px, py] = P(hover);
+    const label = `${G.ids[hover]} · community ${result.comm[hover]}`;
+    ctx.fillStyle = ink; ctx.textAlign = 'left';
+    const tw = ctx.measureText(label).width;
+    const lx = Math.min(px + 10, W - tw - 12), ly = py - 10 < 20 ? py + 20 : py - 10;
+    ctx.globalAlpha = 0.9; ctx.fillStyle = canvas.style.background || getComputedStyle(canvas).backgroundColor;
+    ctx.fillRect(lx - 6, ly - 14, tw + 12, 20);
+    ctx.globalAlpha = 1; ctx.fillStyle = ink;
+    ctx.fillText(label, lx, ly);
+  }
+}
+
+function run(){
+  const parsed = parse($('input').value);
+  if(!parsed.n){ setMsg('No edges found. Use one "u v" pair per line.'); return; }
+  const gamma = +$('gamma').value;
+  const t0 = performance.now();
+  const raw = louvain(parsed.n, parsed.edges, gamma);
+  const renum = new Map();
+  const comm = raw.map(c => { if(!renum.has(c)) renum.set(c, renum.size); return renum.get(c); });
+  const sizes = new Array(renum.size).fill(0);
+  comm.forEach(c => sizes[c]++);
+  const Q = modularity(parsed.n, parsed.edges, comm, gamma);
+
+  G = parsed;
+  G.pos = parsed.n <= LAYOUT_LIMIT ? computeLayout(parsed.n, parsed.edges) : null;
+  result = { comm, sizes, Q };
+  hover = null;
+
+  $('sN').textContent = G.n.toLocaleString();
+  $('sE').textContent = G.edges.length.toLocaleString();
+  $('sC').textContent = sizes.length.toLocaleString();
+  $('sQ').textContent = Q.toFixed(3);
+
+  const order = sizes.map((s, i) => [i, s]).sort((a, b) => b[1] - a[1]);
+  $('legend').innerHTML = order.slice(0, 12).map(([c, s]) =>
+    `<span><i class="dot" style="background:${color(c)}"></i>C${c} · ${s}</span>`).join('') +
+    (order.length > 12 ? `<span>+${order.length - 12} more</span>` : '');
+
+  const rows = ['node,community'];
+  G.ids.forEach((id, i) => rows.push(`${JSON.stringify(id)},${comm[i]}`));
+  $('out').value = rows.join('\n');
+
+  setMsg(`Done in ${(performance.now() - t0).toFixed(0)} ms at γ = ${gamma.toFixed(2)}.`);
+  draw();
+}
+
+canvas.addEventListener('pointermove', e => {
+  if(!view) return;
+  const b = canvas.getBoundingClientRect();
+  const mx = e.clientX - b.left, my = e.clientY - b.top;
+  let best = null, bd = 144;
+  for(let i = 0; i < G.n; i++){
+    const px = view.ox + (view.x[i] - view.x0) * view.s;
+    const py = view.oy + (view.y[i] - view.y0) * view.s;
+    const d = (px - mx) ** 2 + (py - my) ** 2;
+    if(d < bd){ bd = d; best = i; }
+  }
+  if(best !== hover){ hover = best; draw(); }
+});
+canvas.addEventListener('pointerleave', () => { hover = null; draw(); });
+
+$('gamma').addEventListener('input', e => { $('gv').textContent = (+e.target.value).toFixed(2); });
+$('run').addEventListener('click', run);
+$('sample').addEventListener('click', () => { $('input').value = sampleGraph(); run(); });
+$('clear').addEventListener('click', () => {
+  $('input').value = ''; G = null; result = null; hover = null;
+  ['sN','sE','sC','sQ'].forEach(id => $(id).textContent = '–');
+  $('legend').innerHTML = ''; $('out').value = ''; setMsg(''); draw();
+});
+$('file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if(!f) return;
+  f.text().then(t => { $('input').value = t; run(); });
+});
+window.addEventListener('resize', draw);
+
+$('input').value = sampleGraph();
+run();
+</script>
+</body>
+</html>

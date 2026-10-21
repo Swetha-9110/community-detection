@@ -1,0 +1,11 @@
+dataset,nodes,edges,algorithm,gamma,communities,modularity,nmi,seconds
+karate,34,78,louvain,0.5,2,0.6218,0.6772,0.0003
+karate,34,78,louvain,1.0,4,0.4156,0.4977,0.0003
+karate,34,78,louvain,1.5,4,0.2643,0.5878,0.0003
+karate,34,78,louvain,2.0,7,0.1645,0.4436,0.0004
+karate,34,78,lpa,,4,0.3813,0.5369,0.0003
+planted_4x50,200,1360,louvain,0.5,4,0.7646,1.0,0.0046
+planted_4x50,200,1360,louvain,1.0,4,0.6395,1.0,0.0051
+planted_4x50,200,1360,louvain,1.5,4,0.5143,1.0,0.0036
+planted_4x50,200,1360,louvain,2.0,4,0.3892,1.0,0.0052
+planted_4x50,200,1360,lpa,,4,0.6395,1.0,0.0023

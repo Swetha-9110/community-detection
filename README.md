@@ -1,4 +1,6 @@
 # Community Detection (CSE4039 Team Project #1)
+Click here to watch our community detection project demo
+https://drive.google.com/file/d/190-B7_cjKiNWq7VAQuxMGkIQ_XB8T5Hr/view?usp=drive_link
 
 Community detection on undirected networks with a from-scratch Louvain implementation,
 a label propagation baseline, quality metrics, experiments, tests, a CLI, and a browser front end.
